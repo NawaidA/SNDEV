@@ -1,0 +1,405 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>package_private</access>
+        <active>true</active>
+        <api_name>x_10255_responsibl.ResponsibleDisclosureUtils</api_name>
+        <caller_access/>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>ResponsibleDisclosureUtils</name>
+        <script><![CDATA[var ResponsibleDisclosureUtils = Class.create();
+ResponsibleDisclosureUtils.prototype = {
+	initialize: function() {
+	},
+
+	reject: function(rd){
+		rd.state = 'closed';
+		if(rd.rejection_reason == "rd.already_reported"){
+			rd.close_code = 'duplicate';
+		}else{
+			rd.close_code = 'note_applicable';
+		}
+		rd.update();
+		action.setRedirectURL(rd);
+	},
+
+	proceed: function(rd){
+		var sir = this.createSecurityAlert(rd);
+		rd.state = 'pending';
+		rd.sir = sir;
+		rd.update();
+		this.copyAttachments(rd.getValue('sys_id'), 'x_ingmb_responsibl_disclosure', sir, 'sn_si_incident');
+		action.setRedirectURL(rd);
+	},
+
+	restore: function(rd){
+		rd.state = 'pending';
+		rd.close_code = '';
+		rd.update();
+		action.setRedirectURL(rd);
+	},
+
+	sendNotification: function(rd){
+		rd.state = 'rejected';
+		rd.update();
+		action.setRedirectURL(rd);
+	},
+
+	payment: function(grPay){
+		var now = new GlideDateTime();
+		grPay.status = 'sent';
+		grPay.payment_date = now.getValue();
+		grPay.payment_executed_by = gs.getUserID();
+
+		var pay = new GlideRecord('x_ingmb_responsibl_payment');
+		pay.addQuery('payment_group', grPay.sys_id +'');
+		pay.query();
+
+		while(pay.next()){
+			pay.state = 502;
+			pay.payment_date = now.getValue();
+			pay.payment_executed_by = gs.getUserID();
+			pay.update();
+		}
+
+		grPay.update();
+		action.setRedirectURL(grPay);
+	},
+
+	prepare: function(grPay){
+		grPay.status = 'prepare';
+		grPay.update();
+		action.setRedirectURL(grPay);
+	},
+
+	paymentFailed: function(grPay){
+		grPay.status = "failed";
+
+		var pay = new GlideRecord('x_ingmb_responsibl_payment');
+		pay.addQuery('payment_group', grPay.sys_id +'');
+		pay.query();
+
+		while(pay.next()){
+			pay.payment_failed = 'true';
+			pay.update();
+		}
+
+		grPay.update();
+		action.setRedirectURL(grPay);
+	},
+
+	paymentComplete: function(grPay){
+		grPay.status = "complete";
+		grPay.update();
+		action.setRedirectURL(grPay);
+	},
+
+	createSecurityAlert: function(rd){
+		var sensor = new GlideRecord('sn_si_alert_sensor');
+		sensor.get('alert_sensor', 'Responsible Disclosure');
+		//create functionality to raise a security alert using the details from responsible disclosure
+		var secInc = new GlideRecord('sn_si_incident');
+		secInc.initialize();
+		secInc.contact_type = 'Responsible Disclosure';
+		secInc.short_description = rd.number + ' - ' + rd.short_description;
+		secInc.description = 'Description:\n' + rd.description + '\n\nReport Details:\n' + rd.report_details + '\n\nPOC(Steps Undertaken):\n' + rd.poc_steps_undertaken +'\n\nConsequences:\n' + rd.consequences + '\n\nExtra Information:\n' + rd.extra_information +'\n\nProposed Solution:\n' + rd.proposed_solution;
+		secInc.priority = parseInt(rd.threat_level);
+		secInc.caller = gs.getUserID();
+		secInc.cmdb_ci = rd.refa_asset.sys_id;
+		secInc.u_involved_entities = this.getEntity(rd);
+		secInc.category = 'critical_vulnerability';
+		secInc.subcategory = 'critical_vulnerability';
+		secInc.assignment_group.setDisplayValue(gs.getProperty('x_ingmb_responsibl.assignment_group'));
+		secInc.assigned_to = gs.getUserID();
+		secInc.u_rd = rd.sys_id +'';
+		//secInc.u_system = 'Responsible Disclosure';
+		secInc.alert_sensor = sensor.getUniqueValue();
+		var sir = secInc.insert();
+		gs.addInfoMessage('Security Incident ' + secInc.number + ' was created.');
+		return sir;
+	},
+
+	getEntity: function(rd){
+		if(!rd.entity.nil()){
+			var entity = new GlideRecord('u_entity');
+			entity.addQuery('u_name', 'CONTAINS', rd.entity.name);
+			entity.query();
+
+			if(entity.next()){
+				return entity.sys_id +'';
+			}
+		}
+
+		return '';
+	},
+
+	getAsset: function(url){
+		var asset = '';
+		var http = '';
+		var https = '';
+		var httpSlash = '';
+		var httpsSlash = '';
+		var httpPlaceholder = 'http://';
+		var httpsPlaceholder = 'https://';
+
+		if (url.startsWith('http')) {
+			if(url.endsWith('/')){
+				httpSlash = url;
+				httpsSlash = url;
+				http = url.substr(0, url.length -1);
+				https = http;
+			}else{
+				http = url;
+				https = url;
+				httpSlash = url.substr(0, url.length -1);
+				httpsSlash  = httpSlash;
+			}
+		}else{
+			if(url.endsWith('/')){
+				httpSlash = httpPlaceholder + url;
+				httpsSlash = httpsPlaceholder + url;
+				http = httpSlash.substr(0, httpSlash.length - 1);
+				https  = httpsSlash.substr(0, httpsSlash.length - 1);
+			}else{
+				http = httpPlaceholder + url;
+				https = httpsPlaceholder + url;
+				httpSlash =  http + '/';
+				httpsSlash = https + '/';
+			}
+		}
+
+		var refaAsset = new GlideRecord('x_ingmb_refa_asset_information');
+		var qc = refaAsset.addQuery('url', http);
+		qc.addOrCondition('url', https).addOrCondition('url', httpSlash).addOrCondition('url', httpsSlash);
+		qc.addOrCondition('finalurl', http).addOrCondition('finalurl', https).addOrCondition('finalurl', httpSlash).addOrCondition('finalurl', httpsSlash);
+		refaAsset.query();
+
+		if(refaAsset.next()){
+			asset = refaAsset.sys_id + '';
+			gs.addInfoMessage("REFA Asset found: " + refaAsset.name);
+		}else{
+			gs.addErrorMessage("Couldn't match a REFA Asset with the provided URL");
+		}
+
+		return asset;
+	},
+
+	copyApprovalInformation: function(paymentRecord){
+		var reward = paymentRecord.reward == "other" ? paymentRecord.exceptional_reward : paymentRecord.reward;
+		var comment = 'Payment Details:\nReward: ' + reward + '€';
+
+		if(!gs.nil(paymentRecord.justification)){
+			comment +='\nJustification: ' + paymentRecord.justification;
+		}else{
+			comment += '\nNo Justification was provided';
+		}
+
+		var approvals = new GlideRecord('sysapproval_approver');
+		approvals.addQuery('sysapproval', paymentRecord.sys_id+'');
+		approvals.addQuery('state', 'requested');
+		approvals.query();
+
+		while(approvals.next()){
+			approvals.comments = comment;
+			approvals.update();
+		}
+	},
+
+	getApprovedBy: function(paymentRecord){
+		var approvals = new GlideRecord('sysapproval_approver');
+		approvals.addQuery('sysapproval', paymentRecord.sys_id+'');
+		approvals.addQuery('state', 'approved');
+		approvals.query();
+		var approvedBy = '';
+
+		if(approvals.next()){
+			approvedBy = approvals.approver + '';
+		}
+
+		return approvedBy;
+	},
+
+	getWHHInfo: function(payment){
+		payment.iban = payment.rd.whh.iban_acc_number.getDisplayValue();
+		payment.swift = payment.rd.whh.swift_code.getDisplayValue();
+		payment.account_number = payment.rd.whh.bank_acc_number.getDisplayValue();
+		payment.bank_address = payment.rd.whh.bank_address.getDisplayValue();
+		payment.bank_name = payment.rd.whh.bank_name.getDisplayValue();
+		payment.name = payment.rd.whh.first_name + ' ' + payment.rd.whh.last_name;
+		
+		payment.update();
+		action.setRedirectURL(payment);
+	},
+
+	escalateRD: function(){
+		var rd = new GlideRecord('x_ingmb_responsibl_disclosure');
+		rd.addEncodedQuery('state=response^ORstate=verification^escaleted=false');
+		rd.query();
+
+		var now = new GlideDateTime();
+
+		while(rd.next()){
+			var response = new GlideDateTime(rd.response_started);
+			var days = GlideDateTime.subtract(response,now).getDayPart();
+
+			if(days >= 60){
+				this.createEscalationTask(rd);
+				rd.escaleted = true;
+				rd.update();
+			}
+		}
+	},
+
+	addToPaymentGroup: function(payment){
+		var grPay = new GlideRecord('x_ingmb_responsibl_group_payments');
+		grPay.addQuery('whh', payment.rd.whh + '');
+		grPay.addQuery('status', 'open');
+		grPay.query();
+
+		if(grPay.next()){
+			var reward = parseInt(grPay.reward)  + parseInt(payment.exceptional_reward);
+			payment.payment_group = grPay.sys_id + '';
+			grPay.reward = reward;
+			grPay.approval_information += payment.number + ":\n" + payment.approval_history.getJournalEntry(1);
+			grPay.update();
+			payment.update();
+		}else{
+			grPay.initialize();
+			grPay.reward = payment.exceptional_reward;
+			grPay.whh = payment.rd.whh + '';
+			grPay.name = payment.name + '';
+			grPay.iban = payment.iban + '';
+			grPay.swift = payment.swift + '';
+			grPay.approval_information = payment.number + ":\n" + payment.approval_history.getJournalEntry(1);
+			grPay.account_number = payment.account_number + '';
+			grPay.bank_address = payment.bank_address + '';
+			grPay.address = payment.rd.whh.address + '';
+			grPay.country = payment.rd.whh.country + '';
+			grPay.bank_name = payment.bank_name + '';
+
+			grPay.insert();
+
+			payment.payment_group = grPay.sys_id + '';
+			payment.update();
+		}
+	},
+
+
+	copyAttachments: function(sourceSysID, sourceTable, targetSysID, targetTable){
+		var attach = new GlideRecord('sys_attachment'); 
+		attach.addQuery('table_sys_id','=', sourceSysID);
+		attach.query();
+
+		if(attach.hasNext()){
+			GlideSysAttachment.copy(sourceTable, sourceSysID, targetTable, targetSysID);
+		}		
+	},
+
+	createEscalationTask: function(rd){
+		var sir = new GlideRecord('sn_si_incident');
+		sir.get(rd.sir);
+
+		try {
+			var inputs = {};
+			inputs['sirgr'] = sir; // GlideRecord of table: sn_si_incident. 
+			inputs['rdgr'] = rd; // GlideRecord of table: x_ingmb_responsibl_disclosure 
+
+			// Start Asynchronously: Uncomment to run in background. Code snippet will not have access to outputs.
+			// sn_fd.FlowAPI.startAction('x_ingmb_responsibl.rd_create_escalation_task', inputs);
+
+			// Execute Synchronously: Run in foreground. Code snippet has access to outputs
+			var outputs = sn_fd.FlowAPI.executeAction('x_ingmb_responsibl.rd_create_escalation_task', inputs);
+
+			// Current action has no outputs defined.		
+		} catch (ex) {
+			var message = ex.getMessage();
+			gs.error(message);
+		}
+	},
+
+	isFlowBroken: function(rd){
+		if(rd.getValue('state') != 'pending' && rd.getValue('sys_class_name') == 'x_ingmb_responsibl_disclosure' && !gs.nil(rd.getValue('sir'))){
+			var flows = new GlideRecord('sys_flow_context');
+			flows.addQuery('source_record', rd.getUniqueValue());
+			flows.addQuery('state', '!=', 'ERROR');
+			flows.addQuery('state', '!=', 'CANCELLED');
+			flows.addQuery('name', 'RD Flow');
+			flows.query();
+			return !flows.hasNext();	
+		}
+		return false;
+	},
+
+	restartFlow: function(rd){
+		rd.state = 'pending';
+		rd.restart_flow = true;
+		rd.update();
+		gs.addInfoMessage('The will be restarted soon.');
+		action.setRedirectURL(rd);
+
+
+	},
+
+	closeSecondTask: function(){
+		var now = new GlideDateTime().getNumericValue();
+		var task = new GlideRecord('sn_si_task');
+		task.addActiveQuery();
+		task.addQuery('short_description', 'CONTAINS', '- Asset Owner Analysis');
+		task.addQuery('assignment_group.name', 'Responsible Disclosure SPOC');
+		task.query();
+
+		while(task.next()){
+			var due = new GlideDateTime(task.getValue('due_date')).getNumericValue();
+
+			if(now > due){
+				task.outcome = 'yes';
+				task.close_notes = 'Task Automatically closed because due date is over.';
+				task.work_notes = 'Task Automatically closed because due date is over.';
+				task.update();
+			}
+		}
+	},
+
+	cancelStuckFlow: function(){
+		var rd = new GlideRecord('x_ingmb_responsibl_disclosure');
+		rd.addQuery('state', 'analysis');
+		rd.addQuery('sys_class_name', 'x_ingmb_responsibl_disclosure');
+		rd.query();
+
+		while(rd.next()){
+			var responseTask = new GlideRecord('sn_si_task');
+			responseTask.addQuery('parent', rd.getValue('sir'));
+			responseTask.addActiveQuery();
+			responseTask.query();
+
+			if(!responseTask.hasNext()){
+				var flows = new GlideRecord('sys_flow_context');
+				flows.addQuery('source_record', rd.getUniqueValue());
+				flows.addQuery('state', 'WAITING');
+				flows.addQuery('name', 'RD Flow');
+				flows.query();
+				
+				if(flows.next()){
+					gs.info('Cancelling flow for ' + rd.getValue('number'));
+					sn_fd.FlowAPI.cancel(flows.getUniqueValue(), 'Cancelling the flow as it is stuck', gs.getUserName());
+				}
+			}
+		}
+	},
+
+	type: 'ResponsibleDisclosureUtils'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>nawaid.anjum</sys_created_by>
+        <sys_created_on>2021-04-30 09:50:10</sys_created_on>
+        <sys_id>63d3db4a2fbf20102d00d5ccf699b635</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>ResponsibleDisclosureUtils</sys_name>
+        <sys_package display_value="Responsible disclosure" source="x_10255_responsibl">79a35b0a2fbf20102d00d5ccf699b60b</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="Responsible disclosure">79a35b0a2fbf20102d00d5ccf699b60b</sys_scope>
+        <sys_update_name>sys_script_include_63d3db4a2fbf20102d00d5ccf699b635</sys_update_name>
+        <sys_updated_by>nawaid.anjum</sys_updated_by>
+        <sys_updated_on>2021-04-30 09:50:10</sys_updated_on>
+    </sys_script_include>
+</record_update>
